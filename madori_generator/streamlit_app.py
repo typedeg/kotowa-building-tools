@@ -1,6 +1,5 @@
 """
-新築計画 法規チェックツール - Streamlit UI
-外部実務者検証用（著者情報なし）
+New Construction Planning - Building Code Check Tool - Streamlit UI
 """
 import sys
 import os

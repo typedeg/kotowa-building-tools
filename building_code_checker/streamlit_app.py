@@ -1,6 +1,6 @@
 """
-建築法規チェックツール（既存不適格判定）- Streamlit UI
-外部実務者検証用（著者情報なし）
+Building Code Checker - Streamlit UI
+Existing building compliance check tool
 """
 import sys
 import os

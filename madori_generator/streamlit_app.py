@@ -97,12 +97,12 @@ def render_setback_charts(site: SiteInput, result) -> None:
     import matplotlib.pyplot as plt
     import matplotlib.patches as patches
 
-    matplotlib.rcParams['font.family'] = ['Hiragino Sans', 'Hiragino Kaku Gothic ProN', 'DejaVu Sans']
+    matplotlib.rcParams['font.family'] = 'DejaVu Sans'
 
     try:
         slr = _calc_slr(site, result)
     except Exception as e:
-        st.caption(f"斜線制限計算エラー: {e}")
+        st.caption(f"Setback calc error: {e}")
         return
 
     est_bldg_h = result.recommended_floors * 3.0
@@ -114,29 +114,29 @@ def render_setback_charts(site: SiteInput, result) -> None:
     fig1, ax1 = plt.subplots(figsize=(7, 5))
 
     ax1.axvspan(0, site.road_width, alpha=0.15, color='gray')
-    ax1.text(site.road_width / 2, 0.3, '道路', ha='center', va='bottom', fontsize=9, color='gray')
+    ax1.text(site.road_width / 2, 0.3, 'Road', ha='center', va='bottom', fontsize=9, color='gray')
     ax1.axvline(x=site.road_width, color='black', linestyle='--', linewidth=1.2)
-    ax1.text(site.road_width + 0.15, 0.3, '敷地境界', fontsize=8, color='black')
+    ax1.text(site.road_width + 0.15, 0.3, 'Boundary', fontsize=8, color='black')
 
     xs = [p.dist_m for p in slr.road_points]
     ys = [p.height_m for p in slr.road_points]
-    ax1.plot(xs, ys, color='#c0392b', linewidth=2.0, label=f'道路斜線 1:{slr.road_slope:.2f}')
+    ax1.plot(xs, ys, color='#c0392b', linewidth=2.0, label=f'Road setback 1:{slr.road_slope:.2f}')
 
     bx = site.road_width + site.setback_front
     rect1 = patches.Rectangle(
         (bx, 0), result.building_depth, est_bldg_h,
         linewidth=1.5, edgecolor='#2980b9', facecolor='#aed6f1', alpha=0.6,
-        label=f'建物 {result.recommended_floors}F (推定{est_bldg_h:.0f}m)'
+        label=f'Building {result.recommended_floors}F (~{est_bldg_h:.0f}m)'
     )
     ax1.add_patch(rect1)
 
     if slr.abs_height_limit > 0:
         ax1.axhline(y=slr.abs_height_limit, color='#e67e22', linestyle='-.', linewidth=1.5,
-                    label=f'絶対高さ {slr.abs_height_limit:.0f}m')
+                    label=f'Max H {slr.abs_height_limit:.0f}m')
 
     D_front = bx
     ax1.annotate(
-        f'前面 {slr.effective_max_height_front:.1f}m',
+        f'Front {slr.effective_max_height_front:.1f}m',
         xy=(D_front, slr.effective_max_height_front),
         xytext=(D_front + 1.5, slr.effective_max_height_front + 0.8),
         fontsize=8, color='#c0392b',
@@ -145,15 +145,15 @@ def render_setback_charts(site: SiteInput, result) -> None:
     D_rear = bx + result.building_depth
     if slr.effective_max_height_rear < 9999:
         ax1.annotate(
-            f'後面 {slr.effective_max_height_rear:.1f}m',
+            f'Rear {slr.effective_max_height_rear:.1f}m',
             xy=(D_rear, slr.effective_max_height_rear),
             xytext=(D_rear + 1.0, slr.effective_max_height_rear + 0.8),
             fontsize=8, color='#c0392b',
             arrowprops=dict(arrowstyle='->', color='#c0392b', lw=1.0),
         )
 
-    ax1.set_xlabel('道路反対側境界からの水平距離 D (m)')
-    ax1.set_ylabel('高さ H (m)')
+    ax1.set_xlabel('Horizontal dist. from road opp. boundary D (m)')
+    ax1.set_ylabel('Height H (m)')
     ax1.legend(loc='upper left', fontsize=8)
     ax1.set_xlim(left=0, right=max(xs[-1] if xs else 25, D_rear + 3))
     ax1.set_ylim(bottom=0)
@@ -170,25 +170,25 @@ def render_setback_charts(site: SiteInput, result) -> None:
         xs2 = [p.dist_m for p in slr.north_points]
         ys2 = [p.height_m for p in slr.north_points]
         ax2.plot(xs2, ys2, color='#27ae60', linewidth=2.0,
-                 label=f'北側斜線 起算{slr.north_base_h:.0f}m 勾配1:1.25')
+                 label=f'North setback base={slr.north_base_h:.0f}m slope=1:1.25')
 
         ax2.axvline(x=0, color='black', linestyle='--', linewidth=1.2)
-        ax2.text(0.15, 0.3, '北境界', fontsize=8, color='black')
+        ax2.text(0.15, 0.3, 'N.Boundary', fontsize=8, color='black')
 
         x_rear_from_north = max(0.0, est_site_depth - site.setback_front - result.building_depth)
         rect2 = patches.Rectangle(
             (x_rear_from_north, 0), result.building_depth, est_bldg_h,
             linewidth=1.5, edgecolor='#2980b9', facecolor='#aed6f1', alpha=0.6,
-            label=f'建物 {result.recommended_floors}F (推定{est_bldg_h:.0f}m)'
+            label=f'Building {result.recommended_floors}F (~{est_bldg_h:.0f}m)'
         )
         ax2.add_patch(rect2)
 
         if slr.abs_height_limit > 0:
             ax2.axhline(y=slr.abs_height_limit, color='#e67e22', linestyle='-.', linewidth=1.5,
-                        label=f'絶対高さ {slr.abs_height_limit:.0f}m')
+                        label=f'Max H {slr.abs_height_limit:.0f}m')
 
-        ax2.set_xlabel('北境界からの水平距離 x (m) [南方向]')
-        ax2.set_ylabel('高さ H (m)')
+        ax2.set_xlabel('Horizontal dist. from north boundary x (m) [southward]')
+        ax2.set_ylabel('Height H (m)')
         ax2.legend(loc='upper left', fontsize=8)
         ax2.set_xlim(left=0)
         ax2.set_ylim(bottom=0)

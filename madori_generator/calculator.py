@@ -75,6 +75,7 @@ class CheckItem:
     note: str = ''
     law_ref: str = ''                    # 根拠条文キー（例: "建基法53条"）
     citation_text: Optional[str] = None  # 条文テキスト（citation_verifier が設定）
+    suggestion: str = ''                 # NG時の改善提案テキスト
 
 
 @dataclass
@@ -248,33 +249,75 @@ def calculate(site: SiteInput, req: OwnerInput) -> SiteResult:
 
     # ── 7. 法規チェック ─────────────────────────────────────────────
     bcr_actual = rec_building_area / effective_area * 100
+    _bcr_ok = rec_building_area <= max_building_area
+    _bcr_shortage = rec_building_area - max_building_area if not _bcr_ok else 0.0
+    _bcr_suggestion = ''
+    if not _bcr_ok:
+        _bcr_lines = [
+            f"建築面積を約 {_bcr_shortage:.1f}㎡ 削減するか、以下のいずれかを検討してください。",
+            "① 建物フットプリントを縮小し、不足分を上階（2階建て以上）に振り分ける",
+        ]
+        if site.fire_zone == '防火':
+            _bcr_lines.append("② 耐火建築物とすることで建蔽率 +10% 緩和が適用可能（建基法53条3項）")
+        elif site.fire_zone == '準防火':
+            _bcr_lines.append("② 耐火・準耐火建築物とすることで建蔽率 +10% 緩和が適用可能（建基法53条3項）")
+        _bcr_lines.append("③ 掘込ガレージ（地下扱い）への変更で地上建築面積を減少させる方法もある")
+        _bcr_suggestion = '\n'.join(_bcr_lines)
     checks.append(CheckItem(
         item='建蔽率',
         limit=f"{site.coverage_ratio:.0f}%",
         calc=f"{rec_building_area:.1f}㎡ ÷ {effective_area:.1f}㎡ = {bcr_actual:.1f}%",
-        ok=rec_building_area <= max_building_area,
+        ok=_bcr_ok,
         note='防火地域の耐火建築物は+10%緩和あり' if site.fire_zone == '防火' else '',
         law_ref='建基法53条',
+        suggestion=_bcr_suggestion,
     ))
 
     far_actual = required_floor_area / effective_area * 100
     _far_ref = '建基法52条2項' if far_by_road < site.floor_area_ratio else '建基法52条'
+    _far_ok = required_floor_area <= max_floor_area
+    _far_shortage = required_floor_area - max_floor_area if not _far_ok else 0.0
+    _far_suggestion = ''
+    if not _far_ok:
+        _far_lines = [
+            f"延床面積を約 {_far_shortage:.1f}㎡ 削減するか、以下のいずれかを検討してください。",
+            "① 車庫面積を延床面積の 1/5 以内に収めて容積率不算入枠を最大活用する（建基法52条3項）",
+            "② LDK・居室の畳数要件を見直し、必要延床面積を圧縮する",
+        ]
+        if far_by_road < site.floor_area_ratio:
+            _far_lines.append(
+                f"③ 前面道路による制限が効いています（道路幅員 {site.road_width}m × 4/10 = {far_by_road:.0f}%）。"
+                "道路中心からのセットバックで実効幅員を増やせる場合があります（建基法52条2項）"
+            )
+        _far_suggestion = '\n'.join(_far_lines)
     checks.append(CheckItem(
         item='容積率',
         limit=f"{actual_far:.0f}%",
         calc=f"{required_floor_area:.1f}㎡ ÷ {effective_area:.1f}㎡ = {far_actual:.1f}%",
-        ok=required_floor_area <= max_floor_area,
+        ok=_far_ok,
         note='車庫は延床の1/5まで容積率不算入',
         law_ref=_far_ref,
+        suggestion=_far_suggestion,
     ))
 
+    _road_ok = site.road_width >= 4.0
+    _road_setback = (4.0 - site.road_width) / 2 if not _road_ok else 0.0
+    _road_suggestion = ''
+    if not _road_ok:
+        _road_suggestion = (
+            f"前面道路が 4m 未満のため接道義務（建基法43条）に抵触する可能性があります。\n"
+            f"① 建基法42条2項道路（みなし道路）に該当する場合：道路中心から 2m 後退（両側で合計 {_road_setback:.2f}m）"
+            "でセットバック完了後に建築可能。後退部分は建蔽率・容積率の算定から除外されます。\n"
+            "② 42条2項道路に非該当の場合：建基法43条2項による認定（特例許可）の申請を特定行政庁に相談してください。"
+        )
     checks.append(CheckItem(
         item='接道義務（建基法43条）',
         limit='前面道路幅員 4m 以上',
         calc=f"前面道路幅員 {site.road_width}m",
-        ok=site.road_width >= 4.0,
-        note='' if site.road_width >= 4.0 else f'セットバック要（{(4.0 - site.road_width) / 2:.2f}m）',
+        ok=_road_ok,
+        note='' if _road_ok else f'セットバック要（{_road_setback:.2f}m）',
         law_ref='建基法43条',
+        suggestion=_road_suggestion,
     ))
 
     # ── 採光（建基法28条・令19条）──────────────────────────────────────
@@ -297,6 +340,15 @@ def calculate(site: SiteInput, req: OwnerInput) -> SiteResult:
     # 第一・第二種低層住居専用地域で都市計画が指定する場合のみ適用
     if site.setback_exterior_wall > 0:
         ew_ok = site.setback_front >= site.setback_exterior_wall
+        _ew_shortage = site.setback_exterior_wall - site.setback_front if not ew_ok else 0.0
+        _ew_suggestion = ''
+        if not ew_ok:
+            _ew_suggestion = (
+                f"外壁を敷地境界から {site.setback_exterior_wall:.1f}m 後退させる必要があります（現在 {site.setback_front:.1f}m）。\n"
+                f"① 建物を敷地奥側に {_ew_shortage:.1f}m 後退配置することで適合します。\n"
+                "② 軒・庇・出窓（出幅 50cm 未満）は外壁後退距離の適用外となる場合があります（令135条の20）。"
+                "細部は特定行政庁の解釈を確認してください。"
+            )
         checks.append(CheckItem(
             item='外壁後退距離（建基法54条）',
             limit=f'{site.setback_exterior_wall:.1f}m以上',
@@ -304,6 +356,7 @@ def calculate(site: SiteInput, req: OwnerInput) -> SiteResult:
             ok=ew_ok,
             note='' if ew_ok else f'外壁後退が {site.setback_exterior_wall:.1f}m 未満のため要確認',
             law_ref='建基法54条',
+            suggestion=_ew_suggestion,
         ))
 
     # ── 8. 各室面積まとめ ────────────────────────────────────────────

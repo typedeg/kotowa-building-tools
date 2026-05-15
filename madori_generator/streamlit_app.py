@@ -1,5 +1,6 @@
 """
-New Construction Planning - Building Code Check Tool - Streamlit UI
+新築計画 法規チェックツール - Streamlit UI
+外部実務者検証用（著者情報なし）
 """
 import sys
 import os
@@ -41,6 +42,17 @@ def build_markdown_anon(site: SiteInput, req: OwnerInput, result, slr=None) -> s
         lines.append(f"| {c.item} | {c.limit} | {c.calc} | {verdict} | {c.note} | {c.law_ref} |")
     lines.append("")
 
+    ng_items = [c for c in result.checks if not c.ok and c.suggestion]
+    if ng_items:
+        lines.append("## ⚠️ NG項目の改善提案")
+        lines.append("")
+        for c in ng_items:
+            lines.append(f"### {c.item}")
+            lines.append("")
+            for line in c.suggestion.split('\n'):
+                lines.append(line)
+            lines.append("")
+
     lines.append("## 📊 建物規模")
     lines.append("")
     lines.append(f"- 推奨建築面積：{result.recommended_building_area:.1f} ㎡")
@@ -62,6 +74,137 @@ def build_markdown_anon(site: SiteInput, req: OwnerInput, result, slr=None) -> s
         lines.append("")
 
     return "\n".join(lines)
+
+
+def _calc_slr(site: SiteInput, result):
+    """setback_line.calc_setback_lines を正しい引数で呼び出すヘルパー"""
+    from setback_line import calc_setback_lines
+    return calc_setback_lines(
+        use_district=site.use_district,
+        road_direction=site.road_direction,
+        road_width=site.road_width,
+        site_area=site.site_area,
+        building_width=result.building_width,
+        building_depth=result.building_depth,
+        setback_front=site.setback_front,
+        height_limit=site.height_limit,
+    )
+
+
+def render_setback_charts(site: SiteInput, result) -> None:
+    """道路斜線・北側斜線の断面図を描画"""
+    import matplotlib
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as patches
+
+    matplotlib.rcParams['font.family'] = ['Hiragino Sans', 'Hiragino Kaku Gothic ProN', 'DejaVu Sans']
+
+    try:
+        slr = _calc_slr(site, result)
+    except Exception as e:
+        st.caption(f"斜線制限計算エラー: {e}")
+        return
+
+    est_bldg_h = result.recommended_floors * 3.0
+    est_site_depth = site.site_area / max(result.building_width, 1.0)
+    n_cols = 2 if slr.north_applicable else 1
+    cols = st.columns(n_cols)
+
+    # ── 道路斜線断面図 ──────────────────────────────────────────
+    fig1, ax1 = plt.subplots(figsize=(7, 5))
+
+    ax1.axvspan(0, site.road_width, alpha=0.15, color='gray')
+    ax1.text(site.road_width / 2, 0.3, '道路', ha='center', va='bottom', fontsize=9, color='gray')
+    ax1.axvline(x=site.road_width, color='black', linestyle='--', linewidth=1.2)
+    ax1.text(site.road_width + 0.15, 0.3, '敷地境界', fontsize=8, color='black')
+
+    xs = [p.dist_m for p in slr.road_points]
+    ys = [p.height_m for p in slr.road_points]
+    ax1.plot(xs, ys, color='#c0392b', linewidth=2.0, label=f'道路斜線 1:{slr.road_slope:.2f}')
+
+    bx = site.road_width + site.setback_front
+    rect1 = patches.Rectangle(
+        (bx, 0), result.building_depth, est_bldg_h,
+        linewidth=1.5, edgecolor='#2980b9', facecolor='#aed6f1', alpha=0.6,
+        label=f'建物 {result.recommended_floors}F (推定{est_bldg_h:.0f}m)'
+    )
+    ax1.add_patch(rect1)
+
+    if slr.abs_height_limit > 0:
+        ax1.axhline(y=slr.abs_height_limit, color='#e67e22', linestyle='-.', linewidth=1.5,
+                    label=f'絶対高さ {slr.abs_height_limit:.0f}m')
+
+    D_front = bx
+    ax1.annotate(
+        f'前面 {slr.effective_max_height_front:.1f}m',
+        xy=(D_front, slr.effective_max_height_front),
+        xytext=(D_front + 1.5, slr.effective_max_height_front + 0.8),
+        fontsize=8, color='#c0392b',
+        arrowprops=dict(arrowstyle='->', color='#c0392b', lw=1.0),
+    )
+    D_rear = bx + result.building_depth
+    if slr.effective_max_height_rear < 9999:
+        ax1.annotate(
+            f'後面 {slr.effective_max_height_rear:.1f}m',
+            xy=(D_rear, slr.effective_max_height_rear),
+            xytext=(D_rear + 1.0, slr.effective_max_height_rear + 0.8),
+            fontsize=8, color='#c0392b',
+            arrowprops=dict(arrowstyle='->', color='#c0392b', lw=1.0),
+        )
+
+    ax1.set_xlabel('道路反対側境界からの水平距離 D (m)')
+    ax1.set_ylabel('高さ H (m)')
+    ax1.legend(loc='upper left', fontsize=8)
+    ax1.set_xlim(left=0, right=max(xs[-1] if xs else 25, D_rear + 3))
+    ax1.set_ylim(bottom=0)
+    ax1.grid(True, alpha=0.25, linestyle=':')
+    plt.tight_layout()
+    with cols[0]:
+        st.pyplot(fig1)
+    plt.close(fig1)
+
+    # ── 北側斜線断面図（適用地域のみ） ────────────────────────────
+    if slr.north_applicable:
+        fig2, ax2 = plt.subplots(figsize=(7, 5))
+
+        xs2 = [p.dist_m for p in slr.north_points]
+        ys2 = [p.height_m for p in slr.north_points]
+        ax2.plot(xs2, ys2, color='#27ae60', linewidth=2.0,
+                 label=f'北側斜線 起算{slr.north_base_h:.0f}m 勾配1:1.25')
+
+        ax2.axvline(x=0, color='black', linestyle='--', linewidth=1.2)
+        ax2.text(0.15, 0.3, '北境界', fontsize=8, color='black')
+
+        x_rear_from_north = max(0.0, est_site_depth - site.setback_front - result.building_depth)
+        rect2 = patches.Rectangle(
+            (x_rear_from_north, 0), result.building_depth, est_bldg_h,
+            linewidth=1.5, edgecolor='#2980b9', facecolor='#aed6f1', alpha=0.6,
+            label=f'建物 {result.recommended_floors}F (推定{est_bldg_h:.0f}m)'
+        )
+        ax2.add_patch(rect2)
+
+        if slr.abs_height_limit > 0:
+            ax2.axhline(y=slr.abs_height_limit, color='#e67e22', linestyle='-.', linewidth=1.5,
+                        label=f'絶対高さ {slr.abs_height_limit:.0f}m')
+
+        ax2.set_xlabel('北境界からの水平距離 x (m) [南方向]')
+        ax2.set_ylabel('高さ H (m)')
+        ax2.legend(loc='upper left', fontsize=8)
+        ax2.set_xlim(left=0)
+        ax2.set_ylim(bottom=0)
+        ax2.grid(True, alpha=0.25, linestyle=':')
+        plt.tight_layout()
+        with cols[1]:
+            st.pyplot(fig2)
+        plt.close(fig2)
+
+    # 根拠条文・算定式の詳細
+    if slr.notes:
+        with st.expander('📖 斜線制限の根拠条文・算定式', expanded=False):
+            for note in slr.notes:
+                st.text(note)
+    for w in slr.warnings:
+        st.caption(f'⚠️ {w}')
 
 
 def main():
@@ -199,6 +342,16 @@ def main():
             hide_index=True,
         )
 
+    # ── NG項目の改善提案 ──────────────────────────────────────────────
+    ng_items = [c for c in result.checks if not c.ok and c.suggestion]
+    if ng_items:
+        with st.expander(f"⚠️ NG項目の改善提案（{len(ng_items)}件）", expanded=True):
+            for c in ng_items:
+                st.markdown(f"**{c.item}**")
+                for line in c.suggestion.split('\n'):
+                    st.markdown(line)
+                st.divider()
+
     # ── 建物規模サマリー ───────────────────────────────────────────
     st.subheader("📊 建物規模")
     col1, col2, col3, col4 = st.columns(4)
@@ -221,6 +374,12 @@ def main():
             if result.ua_zeh:
                 col3.metric("U_A値 ZEH水準", f"{result.ua_zeh} W/(m²·K)")
             st.caption(result.energy_region_label)
+
+    # ── 斜線制限断面図 ────────────────────────────────────────────
+    st.divider()
+    st.subheader("📐 斜線制限断面図")
+    st.caption("道路斜線（建基法56条1項1号）・北側斜線（同3号）の制限ラインと推定建物外形の関係を示します")
+    render_setback_charts(site, result)
 
     # ── 間取りパターン（現在無効・コードは保持） ──────────────────
     # st.divider()
@@ -269,8 +428,7 @@ def main():
     try:
         slr = None
         try:
-            from setback_line import calc_setback_lines
-            slr = calc_setback_lines(site, result)
+            slr = _calc_slr(site, result)
         except Exception:
             pass
 

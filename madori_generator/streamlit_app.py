@@ -73,6 +73,25 @@ def build_markdown_anon(site: SiteInput, req: OwnerInput, result, slr=None) -> s
             lines.append(f"- U_A値 ZEH水準：{result.ua_zeh} W/(m²·K)")
         lines.append("")
 
+    lines += [
+        "## 🔗 参照リンク（法規条件の確認用）",
+        "",
+        "本結果の用途地域・建蔽率・容積率等はGISデータ・入力値に基づく参考値です。",
+        "確認申請前に必ず以下の公開情報および自治体窓口でご確認ください"
+        "（高松市: 都市計画課 087-839-2455）。",
+        "",
+        "- たかまっぷ（高松市地図ポータル）用途地域等: "
+        "https://takamatsu.geocloud.jp/webgis/?z=19&ll=34.342778%2C134.046667&t=DM&mp=90&op=70&vlf=90-84-00000ffffffe",
+        "- たかまっぷ（高松市地図ポータル）道路種別等: "
+        "https://takamatsu.geocloud.jp/webgis/?z=19&ll=34.319565%2C134.005478&t=roadmap&mp=100&op=70&vlf=-1",
+        "- 国土交通省 不動産情報ライブラリ（用途地域・防火地域GISデータ出典）: "
+        "https://www.reinfolib.mlit.go.jp/",
+        "",
+        "> 建築基準法上の道路種別は自動取得できないため、上記「道路種別等」の地図および",
+        "> 高松市建築指導課での窓口確認が必要です。",
+        "",
+    ]
+
     return "\n".join(lines)
 
 
@@ -217,13 +236,70 @@ def main():
     st.title("📐 新築計画 法規チェックツール")
     st.caption("敷地条件・施主要望から建築基準法の適合性を自動チェックします")
 
+    # フォーム初期値（住所自動取得で上書きされる）
+    _defaults = {
+        "coverage_ratio": 60.0,
+        "floor_area_ratio": 150.0,
+        "use_district": "第一種低層住居専用地域",
+        "fire_zone": "なし",
+    }
+    for _k, _v in _defaults.items():
+        st.session_state.setdefault(_k, _v)
+
+    # ── 住所から法規条件を自動取得（任意） ─────────────────────────
+    with st.expander("📍 住所から用途地域・建蔽率・容積率・防火指定を自動取得（任意）"):
+        st.caption(
+            "国土地理院ジオコーディング＋国交省 不動産情報ライブラリAPI（XKT002/XKT014）を使用。"
+            "取得値はGISデータによる参考値です。確認申請前に必ず自治体で確認してください。"
+        )
+        addr_col1, addr_col2 = st.columns([3, 1])
+        address = addr_col1.text_input(
+            "敷地住所", placeholder="例: 香川県高松市番町一丁目8-15", key="lookup_address")
+        if addr_col2.button("自動取得", use_container_width=True):
+            try:
+                if "LIBRARY_API_KEY" in st.secrets:
+                    os.environ["LIBRARY_API_KEY"] = st.secrets["LIBRARY_API_KEY"]
+            except Exception:
+                pass
+            try:
+                from zoning_lookup import lookup
+                with st.spinner("取得中..."):
+                    z = lookup(address)
+                st.success(f"位置特定: {z.matched_address}")
+                _districts = [
+                    "第一種低層住居専用地域", "第二種低層住居専用地域",
+                    "第一種中高層住居専用地域", "第二種中高層住居専用地域",
+                    "第一種住居地域", "第二種住居地域", "田園住居地域", "準住居地域",
+                    "近隣商業地域", "商業地域", "準工業地域", "工業地域", "工業専用地域",
+                ]
+                if z.use_district in _districts:
+                    st.session_state["use_district"] = z.use_district
+                elif z.use_district:
+                    st.warning(f"用途地域「{z.use_district}」は選択肢にないため手動選択してください")
+                if z.coverage_ratio is not None:
+                    st.session_state["coverage_ratio"] = float(z.coverage_ratio)
+                if z.floor_area_ratio is not None:
+                    st.session_state["floor_area_ratio"] = float(z.floor_area_ratio)
+                if z.fire_zone is not None:
+                    st.session_state["fire_zone"] = z.fire_zone
+                st.info(
+                    f"用途地域: {z.use_district or '取得不可'} / "
+                    f"建蔽率: {z.coverage_ratio or '—'}% / "
+                    f"容積率: {z.floor_area_ratio or '—'}% / "
+                    f"防火指定: {z.fire_zone or '—'} → 下のフォームに反映しました"
+                )
+                for w in z.warnings:
+                    st.warning(w)
+            except Exception as e:
+                st.error(f"自動取得に失敗しました（手入力で続行してください）: {e}")
+
     with st.form("madori_form"):
         st.subheader("📐 敷地条件")
         col1, col2, col3 = st.columns(3)
         with col1:
             site_area = st.number_input("敷地面積 (㎡) ★", min_value=10.0, value=112.0, step=1.0)
-            coverage_ratio = st.number_input("建蔽率 (%) ★", min_value=10.0, max_value=100.0, value=60.0, step=10.0)
-            floor_area_ratio = st.number_input("容積率 (%) ★", min_value=10.0, max_value=1000.0, value=150.0, step=50.0)
+            coverage_ratio = st.number_input("建蔽率 (%) ★", min_value=10.0, max_value=100.0, step=10.0, key="coverage_ratio")
+            floor_area_ratio = st.number_input("容積率 (%) ★", min_value=10.0, max_value=1000.0, step=50.0, key="floor_area_ratio")
         with col2:
             road_direction = st.selectbox("接道方位 ★", ["南", "北", "東", "西"])
             road_width = st.number_input("前面道路幅員 (m)", min_value=1.0, max_value=20.0, value=4.5, step=0.5)
@@ -232,10 +308,10 @@ def main():
             use_district = st.selectbox("用途地域", [
                 "第一種低層住居専用地域", "第二種低層住居専用地域",
                 "第一種中高層住居専用地域", "第二種中高層住居専用地域",
-                "第一種住居地域", "第二種住居地域", "準住居地域",
-                "近隣商業地域", "商業地域", "準工業地域", "工業地域",
-            ])
-            fire_zone = st.selectbox("防火地域区分", ["なし", "準防火", "防火"])
+                "第一種住居地域", "第二種住居地域", "田園住居地域", "準住居地域",
+                "近隣商業地域", "商業地域", "準工業地域", "工業地域", "工業専用地域",
+            ], key="use_district")
+            fire_zone = st.selectbox("防火地域区分", ["なし", "準防火", "防火"], key="fire_zone")
             height_limit = st.number_input("高さ制限 (m)（0=なし）", min_value=0.0, max_value=30.0, value=0.0, step=0.5)
 
         col1, col2 = st.columns(2)
@@ -380,6 +456,23 @@ def main():
     st.subheader("📐 斜線制限断面図")
     st.caption("道路斜線（建基法56条1項1号）・北側斜線（同3号）の制限ラインと推定建物外形の関係を示します")
     render_setback_charts(site, result)
+
+    # ── 参照リンク（法規条件の確認用） ─────────────────────────────
+    st.divider()
+    with st.expander("🔗 参照リンク（法規条件の確認用）", expanded=False):
+        st.markdown(
+            "本結果の用途地域・建蔽率・容積率等はGISデータ・入力値に基づく**参考値**です。"
+            "確認申請前に必ず以下の公開情報および自治体窓口でご確認ください"
+            "（高松市: 都市計画課 087-839-2455）。\n\n"
+            "- [たかまっぷ（高松市地図ポータル）用途地域等]"
+            "(https://takamatsu.geocloud.jp/webgis/?z=19&ll=34.342778%2C134.046667&t=DM&mp=90&op=70&vlf=90-84-00000ffffffe)\n"
+            "- [たかまっぷ（高松市地図ポータル）道路種別等]"
+            "(https://takamatsu.geocloud.jp/webgis/?z=19&ll=34.319565%2C134.005478&t=roadmap&mp=100&op=70&vlf=-1)\n"
+            "- [国土交通省 不動産情報ライブラリ（用途地域・防火地域GISデータ出典）]"
+            "(https://www.reinfolib.mlit.go.jp/)\n\n"
+            "> 建築基準法上の道路種別は自動取得できないため、上記「道路種別等」の地図および"
+            "高松市建築指導課での窓口確認が必要です。"
+        )
 
     # ── 間取りパターン（現在無効・コードは保持） ──────────────────
     # st.divider()

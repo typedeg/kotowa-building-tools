@@ -25,6 +25,7 @@ except Exception:
     _get_citations = None
 
 TATAMI = 1.62  # 1畳 = 1.62㎡（京間）
+TSUBO = 400 / 121  # 1坪 ≒ 3.3058㎡（計量法に基づく換算値）
 
 
 @dataclass
@@ -161,6 +162,11 @@ def calculate(site: SiteInput, req: OwnerInput) -> SiteResult:
         approx_width = math.sqrt(site.site_area * 0.7)
         sb_area = approx_width * site.setback_front
         effective_area = max(site.site_area - sb_area, site.site_area * 0.75)
+        if site.site_area - sb_area < site.site_area * 0.75:
+            warnings.append(
+                f"前面セットバック {site.setback_front}m が大きいため、"
+                f"有効面積を下限（元面積の75%）で打ち切りました。セットバック値を見直してください"
+            )
         warnings.append(
             f"前面セットバック {site.setback_front}m 適用 → "
             f"有効面積 {effective_area:.1f}㎡（元 {site.site_area:.1f}㎡）"

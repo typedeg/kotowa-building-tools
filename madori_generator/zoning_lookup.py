@@ -176,6 +176,20 @@ def _parse_percent(value) -> Optional[float]:
         return None
 
 
+def _normalize_district(name) -> Optional[str]:
+    """用途地域名の表記揺れを正規化する。
+
+    APIは「第１種低層住居専用地域」（全角アラビア数字）等で返すことがあるため、
+    都市計画法の正式表記「第一種〜」（漢数字）に統一する。
+    """
+    if not name:
+        return name
+    s = str(name).strip()
+    s = s.translate(str.maketrans('１２', '12'))  # 全角数字→半角
+    s = s.replace('第1種', '第一種').replace('第2種', '第二種')
+    return s
+
+
 def lookup(address: str) -> ZoningResult:
     """住所から用途地域・建蔽率・容積率・防火指定を取得する"""
     result = ZoningResult(address=address)
@@ -196,8 +210,8 @@ def lookup(address: str) -> ZoningResult:
         props = _query_reinfolib('XKT002', lat, lon, api_key)
         if props:
             result.raw_properties = props
-            result.use_district = _pick(
-                props, ['use_area_ja', 'youto_area_full_ja', '用途地域'])
+            result.use_district = _normalize_district(_pick(
+                props, ['use_area_ja', 'youto_area_full_ja', '用途地域']))
             bcr = _pick(props, ['u_building_coverage_ratio', 'kenpei', '建蔽', '建ぺい'])
             far = _pick(props, ['u_floor_area_ratio', 'yoseki', '容積'])
             if bcr is not None:

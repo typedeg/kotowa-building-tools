@@ -49,6 +49,8 @@ class SiteInput:
     tsukiatari: Optional[dict] = None     # 突き当たり道路 {"direction":"west","terminus_x":4.53}
     climate_region: int = 6               # 省エネ地域区分 1〜8（デフォルト: 6地域・高松市）
     setback_exterior_wall: float = 0.0    # 外壁後退距離制限 (m, 0=指定なし)【建基法54条】
+    corner_lot: bool = False              # 角地緩和 +10%（特定行政庁指定・建基法53条3項2号）
+    fireproof_building: bool = False      # 耐火建築物等とする（建基法53条3項1号の+10%緩和）
 
 
 @dataclass
@@ -99,6 +101,9 @@ class SiteResult:
     # 法規チェック
     checks: List[CheckItem] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
+    effective_coverage_ratio: float = 0.0  # 緩和適用後の建蔽率 (%)（建基法53条3項・6項）
+    far_by_road: float = 0.0        # 前面道路幅員による容積率上限 (%)（建基法52条2項）
+    far_coeff: int = 4              # 52条2項の係数（住居系4・その他6）
     # ── ポリゴンモード拡張フィールド ────────────────────────────────
     polygon_data: Optional[Any] = None        # PolygonSiteData（ポリゴン時のみセット）
     buildable_zone_area: float = 0.0          # 建築可能ゾーン面積 (㎡)
@@ -174,25 +179,52 @@ def calculate(site: SiteInput, req: OwnerInput) -> SiteResult:
     else:
         effective_area = site.site_area
 
-    # ── 2. 前面道路による容積率制限（建基法52条第2項） ──────────────
-    # 住居系用途地域: 道路幅員 × 4/10
-    if '工業' in site.use_district or '商業' in site.use_district:
-        far_coeff = 6  # 非住居系: ×6/10
+    # ── 2. 前面道路による容積率制限（建基法52条2項） ──────────────
+    # 前面道路幅員12m未満の場合、用途地域に応じた係数を幅員に乗じた値が上限
+    # 住居系（第一・二種低層/中高層住専・第一・二種住居・準住居・田園住居）: ×4/10
+    # その他（近隣商業・商業・準工業・工業・工業専用等）: ×6/10
+    if '住居' in site.use_district:
+        far_coeff = 4
     else:
-        far_coeff = 4  # 住居系: ×4/10
+        far_coeff = 6
     far_by_road = site.road_width * far_coeff * 10  # → %に変換
 
-    if far_by_road < site.floor_area_ratio:
+    if site.road_width >= 12.0:
+        # 幅員12m以上は52条2項の制限自体が不適用
+        far_by_road = site.floor_area_ratio
+        actual_far = site.floor_area_ratio
+    elif far_by_road < site.floor_area_ratio:
         actual_far = far_by_road
         warnings.append(
-            f"前面道路幅員 {site.road_width}m により容積率は "
-            f"{actual_far:.0f}% に制限（指定 {site.floor_area_ratio:.0f}%）"
+            f"前面道路幅員 {site.road_width}m × {far_coeff}/10 により容積率は "
+            f"{actual_far:.0f}% に制限（指定 {site.floor_area_ratio:.0f}%・建基法52条2項）"
         )
     else:
         actual_far = site.floor_area_ratio
 
+    # ── 2b. 建蔽率の緩和（建基法53条3項・6項1号） ──────────────────
+    bcr_bonus = 0.0
+    if site.corner_lot:
+        bcr_bonus += 10
+        warnings.append(
+            '角地緩和 +10% を適用（建基法53条3項2号。角地指定の有無は特定行政庁＝自治体で要確認）'
+        )
+    if site.fireproof_building and site.fire_zone in ('防火', '準防火'):
+        bcr_bonus += 10
+        _fp_label = ('防火地域内の耐火建築物等' if site.fire_zone == '防火'
+                     else '準防火地域内の耐火・準耐火建築物等')
+        warnings.append(f'{_fp_label} +10% を適用（建基法53条3項1号）')
+    effective_bcr = min(site.coverage_ratio + bcr_bonus, 100.0)
+    if (site.coverage_ratio >= 80 and site.fire_zone == '防火'
+            and site.fireproof_building):
+        effective_bcr = 100.0
+        warnings.append(
+            '建蔽率80%地域×防火地域内の耐火建築物等のため建蔽率制限は適用除外＝100%'
+            '（建基法53条6項1号）'
+        )
+
     # ── 3. 法規上限面積 ─────────────────────────────────────────────
-    max_building_area = effective_area * site.coverage_ratio / 100
+    max_building_area = effective_area * effective_bcr / 100
     max_floor_area = effective_area * actual_far / 100
 
     # ── 4. 必要延床面積の推計 ───────────────────────────────────────
@@ -271,7 +303,8 @@ def calculate(site: SiteInput, req: OwnerInput) -> SiteResult:
         _bcr_suggestion = '\n'.join(_bcr_lines)
     checks.append(CheckItem(
         item='建蔽率',
-        limit=f"{site.coverage_ratio:.0f}%",
+        limit=(f"{effective_bcr:.0f}%（指定{site.coverage_ratio:.0f}%＋緩和）"
+               if effective_bcr != site.coverage_ratio else f"{site.coverage_ratio:.0f}%"),
         calc=f"{rec_building_area:.1f}㎡ ÷ {effective_area:.1f}㎡ = {bcr_actual:.1f}%",
         ok=_bcr_ok,
         note='防火地域の耐火建築物は+10%緩和あり' if site.fire_zone == '防火' else '',
@@ -420,6 +453,9 @@ def calculate(site: SiteInput, req: OwnerInput) -> SiteResult:
         max_building_area=round(max_building_area, 2),
         max_floor_area=round(max_floor_area, 2),
         actual_far=actual_far,
+        effective_coverage_ratio=effective_bcr,
+        far_by_road=round(far_by_road, 1),
+        far_coeff=far_coeff,
         effective_site_area=round(effective_area, 2),
         recommended_building_area=round(rec_building_area, 2),
         recommended_floors=floors,

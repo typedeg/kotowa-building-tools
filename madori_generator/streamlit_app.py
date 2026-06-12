@@ -24,7 +24,6 @@ def build_markdown_anon(site: SiteInput, req: OwnerInput, result, slr=None) -> s
     lines.append(f"- 作成日：{date.today().isoformat()}")
     lines.append(f"- 敷地面積：{site.site_area} ㎡　建蔽率：{site.coverage_ratio}%　容積率：{site.floor_area_ratio}%")
     lines.append(f"- 用途地域：{site.use_district}　防火：{site.fire_zone}　接道方位：{site.road_direction}")
-    lines.append(f"- 家族構成：{req.family}　予算：{req.budget}")
     lines.append(f"")
 
     if result.warnings:
@@ -53,15 +52,15 @@ def build_markdown_anon(site: SiteInput, req: OwnerInput, result, slr=None) -> s
                 lines.append(line)
             lines.append("")
 
-    lines.append("## 📊 建物規模")
+    lines.append("## 📊 法規上限（敷地面積・建蔽率・容積率からの最大値）")
     lines.append("")
-    lines.append(f"- 推奨建築面積：{result.recommended_building_area:.1f} ㎡")
-    lines.append(f"- 必要延床面積：{result.required_floor_area:.1f} ㎡")
-    lines.append(f"- 推奨階数：{result.recommended_floors} 階")
-    lines.append(f"- 建物寸法：{result.building_width:.1f}m × {result.building_depth:.1f}m")
-    lines.append(f"- 最大建築面積（法規）：{result.max_building_area:.1f} ㎡")
-    lines.append(f"- 最大延床面積（法規）：{result.max_floor_area:.1f} ㎡")
-    lines.append(f"- 実効容積率：{result.actual_far:.0f} %")
+    lines.append(f"- 敷地面積：{site.site_area:.1f} ㎡")
+    lines.append(f"- 最大建築面積：{result.max_building_area:.1f} ㎡"
+                 f"（建蔽率 {result.effective_coverage_ratio:.0f}%・緩和込・建基法53条）")
+    lines.append(f"- 最大延床面積：{result.max_floor_area:.1f} ㎡"
+                 f"（実効容積率 {result.actual_far:.0f}%・建基法52条）")
+    lines.append(f"- 道路幅員による容積率上限：{result.far_by_road:.0f} %"
+                 f"（{site.road_width}m × {result.far_coeff}/10・建基法52条2項）")
     lines.append("")
 
     if result.ua_standard:
@@ -236,15 +235,36 @@ def main():
     st.title("📐 新築計画 法規チェックツール")
     st.caption("敷地条件・施主要望から建築基準法の適合性を自動チェックします")
 
-    # フォーム初期値（住所自動取得で上書きされる）
+    # フォーム初期値（住所自動取得・用途地域選択で上書きされる）
     _defaults = {
         "coverage_ratio": 60.0,
         "floor_area_ratio": 150.0,
         "use_district": "第一種低層住居専用地域",
         "fire_zone": "なし",
+        "height_limit": 10.0,   # デフォルト用途地域＝一低のため建基法55条の10m
+        "climate_region": 6,
     }
     for _k, _v in _defaults.items():
         st.session_state.setdefault(_k, _v)
+
+    _DISTRICTS = [
+        "第一種低層住居専用地域", "第二種低層住居専用地域",
+        "第一種中高層住居専用地域", "第二種中高層住居専用地域",
+        "第一種住居地域", "第二種住居地域", "田園住居地域", "準住居地域",
+        "近隣商業地域", "商業地域", "準工業地域", "工業地域", "工業専用地域",
+    ]
+    # 建基法55条1項：絶対高さ制限（10m又は12m・都市計画で指定）の対象地域
+    _LOW_RISE = ("第一種低層住居専用地域", "第二種低層住居専用地域", "田園住居地域")
+    _TAKAMAP_YOUTO = ("https://takamatsu.geocloud.jp/webgis/"
+                      "?z=19&ll=34.342778%2C134.046667&t=DM&mp=90&op=70&vlf=90-84-00000ffffffe")
+    _TAKAMAP_ROAD = ("https://takamatsu.geocloud.jp/webgis/"
+                     "?z=19&ll=34.319565%2C134.005478&t=roadmap&mp=100&op=70&vlf=-1")
+
+    def _default_height(district: str) -> float:
+        return 10.0 if district in _LOW_RISE else 0.0
+
+    def _on_district_change():
+        st.session_state["height_limit"] = _default_height(st.session_state["use_district"])
 
     # ── 住所から法規条件を自動取得（任意） ─────────────────────────
     with st.expander("📍 住所から用途地域・建蔽率・容積率・防火指定を自動取得（任意）"):
@@ -266,14 +286,9 @@ def main():
                 with st.spinner("取得中..."):
                     z = lookup(address)
                 st.success(f"位置特定: {z.matched_address}")
-                _districts = [
-                    "第一種低層住居専用地域", "第二種低層住居専用地域",
-                    "第一種中高層住居専用地域", "第二種中高層住居専用地域",
-                    "第一種住居地域", "第二種住居地域", "田園住居地域", "準住居地域",
-                    "近隣商業地域", "商業地域", "準工業地域", "工業地域", "工業専用地域",
-                ]
-                if z.use_district in _districts:
+                if z.use_district in _DISTRICTS:
                     st.session_state["use_district"] = z.use_district
+                    st.session_state["height_limit"] = _default_height(z.use_district)
                 elif z.use_district:
                     st.warning(f"用途地域「{z.use_district}」は選択肢にないため手動選択してください")
                 if z.coverage_ratio is not None:
@@ -282,16 +297,61 @@ def main():
                     st.session_state["floor_area_ratio"] = float(z.floor_area_ratio)
                 if z.fire_zone is not None:
                     st.session_state["fire_zone"] = z.fire_zone
+
+                # 省エネ地域区分の自動反映（市区町村名→地域区分テーブル）
+                _region_msg = ""
+                try:
+                    _bcc = os.path.join(
+                        os.path.dirname(os.path.abspath(__file__)),
+                        "..", "building_code_checker")
+                    if _bcc not in sys.path:
+                        sys.path.insert(0, _bcc)
+                    from judges.energy_standards import CITY_CLIMATE_REGION
+                    import re as _re
+                    _m = _re.search(r'(?:都|道|府|県)(.{1,8}?[市町村])', z.matched_address)
+                    _city = _m.group(1) if _m else None
+                    if _city and _city in CITY_CLIMATE_REGION:
+                        st.session_state["climate_region"] = CITY_CLIMATE_REGION[_city]
+                        _region_msg = f"省エネ地域区分: {CITY_CLIMATE_REGION[_city]}地域（{_city}）"
+                    else:
+                        st.warning(
+                            f"省エネ地域区分テーブルに「{_city or '市区町村名'}」が未登録のため"
+                            "自動設定をスキップしました。国交省告示の地域区分一覧で確認してください"
+                        )
+                except Exception as _e:
+                    st.warning(f"省エネ地域区分の自動取得をスキップ: {_e}")
+
                 st.info(
                     f"用途地域: {z.use_district or '取得不可'} / "
                     f"建蔽率: {z.coverage_ratio or '—'}% / "
                     f"容積率: {z.floor_area_ratio or '—'}% / "
-                    f"防火指定: {z.fire_zone or '—'} → 下のフォームに反映しました"
+                    f"防火指定: {z.fire_zone or '—'}"
+                    + (f" / {_region_msg}" if _region_msg else "")
+                    + " → 下のフォームに反映しました"
                 )
                 for w in z.warnings:
                     st.warning(w)
             except Exception as e:
                 st.error(f"自動取得に失敗しました（手入力で続行してください）: {e}")
+
+    # ── 用途地域（選択即時に法定高さ・通知を反映するためフォーム外） ──
+    st.subheader("🗺 用途地域")
+    use_district = st.selectbox(
+        "用途地域", _DISTRICTS, key="use_district", on_change=_on_district_change)
+    if use_district in _LOW_RISE:
+        st.info(
+            "建基法55条1項：この用途地域の建築物の高さは **10m又は12m**"
+            "（どちらかは都市計画で指定）以下です。基本値 **10m** を高さ制限欄に設定しました。"
+            "10m/12mの別・高度地区の有無は必ず自治体（高松市: 都市計画課 087-839-2455）で確認してください。"
+        )
+    else:
+        st.info(
+            "この用途地域に建基法55条の絶対高さ制限はありません（斜線制限・日影規制・"
+            "高度地区等が適用）。高度地区等の指定は必ず自治体で確認してください。"
+        )
+    st.caption(
+        f"🔗 高松市内の用途地域の確認: [たかまっぷ（用途地域等）]({_TAKAMAP_YOUTO})"
+    )
 
     with st.form("madori_form"):
         st.subheader("📐 敷地条件")
@@ -303,48 +363,37 @@ def main():
         with col2:
             road_direction = st.selectbox("接道方位 ★", ["南", "北", "東", "西"])
             road_width = st.number_input("前面道路幅員 (m)", min_value=1.0, max_value=20.0, value=4.5, step=0.5)
+            st.caption(f"🔗 [たかまっぷ（道路種別等）]({_TAKAMAP_ROAD})｜建基法上の道路種別は地図と建築指導課で要確認")
             setback_front = st.number_input("前面セットバック (m)", min_value=0.0, max_value=5.0, value=0.0, step=0.5)
         with col3:
-            use_district = st.selectbox("用途地域", [
-                "第一種低層住居専用地域", "第二種低層住居専用地域",
-                "第一種中高層住居専用地域", "第二種中高層住居専用地域",
-                "第一種住居地域", "第二種住居地域", "田園住居地域", "準住居地域",
-                "近隣商業地域", "商業地域", "準工業地域", "工業地域", "工業専用地域",
-            ], key="use_district")
-            fire_zone = st.selectbox("防火地域区分", ["なし", "準防火", "防火"], key="fire_zone")
-            height_limit = st.number_input("高さ制限 (m)（0=なし）", min_value=0.0, max_value=30.0, value=0.0, step=0.5)
-
-        col1, col2 = st.columns(2)
-        with col1:
+            fire_zone = st.selectbox(
+                "防火地域区分", ["なし", "法22条地域", "準防火", "防火"], key="fire_zone")
+            height_limit = st.number_input(
+                "高さ制限 (m)（0=なし）", min_value=0.0, max_value=30.0, step=0.5,
+                key="height_limit",
+                help="用途地域の選択で法定の基本値が自動設定されます（建基法55条）。"
+                     "都市計画で12m指定の場合や高度地区がある場合は修正してください。")
             setback_exterior_wall = st.number_input(
                 "外壁後退距離制限 (m)（0=なし）【建基法54条・低層住専のみ】",
                 min_value=0.0, max_value=3.0, value=0.0, step=0.5
             )
-        with col2:
-            climate_region = st.number_input(
-                "省エネ地域区分（1〜8）",
-                min_value=1, max_value=8, value=6, step=1
-            )
-            st.caption("高松=6、東京=6、仙台=3、札幌=2")
 
-        st.subheader("👨‍👩‍👧‍👦 施主要望（必要延床面積の算出に使用）")
+        st.markdown("**建蔽率の緩和（建基法53条3項）** — 該当する場合にチェック")
         col1, col2, col3 = st.columns(3)
         with col1:
-            family = st.text_input("家族構成", value="夫婦+子2人")
-            budget = st.text_input("予算", value="未定")
-            ldk_tatami = st.number_input("LDK広さ (畳)", min_value=10.0, max_value=40.0, value=20.0, step=1.0)
+            corner_lot = st.checkbox(
+                "角地緩和 +10%（53条3項2号）",
+                help="特定行政庁が指定する角地等。指定の有無は自治体で要確認")
         with col2:
-            num_rooms = st.number_input("居室数（LDK除く）", min_value=1, max_value=8, value=3, step=1)
-            master_tatami = st.number_input("主寝室 (畳)（0=自動8畳）", min_value=0.0, max_value=20.0, value=8.0, step=1.0)
-            room_tatami = st.number_input("各居室 (畳)（0=自動6畳）", min_value=0.0, max_value=15.0, value=6.0, step=1.0)
+            fireproof_building = st.checkbox(
+                "耐火建築物等とする +10%（53条3項1号）",
+                help="防火地域内の耐火建築物等／準防火地域内の耐火・準耐火建築物等が対象。"
+                     "建蔽率80%地域×防火地域×耐火は適用除外＝100%（53条6項1号）")
         with col3:
-            water_placement = st.selectbox("水回り配置", ["おまかせ", "1F北", "1F南"])
-            parking = st.number_input("駐車台数", min_value=0, max_value=5, value=1, step=1)
-            col3a, col3b = st.columns(2)
-            with col3a:
-                has_washitsu = st.checkbox("和室希望")
-            with col3b:
-                has_pantry = st.checkbox("パントリー希望")
+            climate_region = st.number_input(
+                "省エネ地域区分（1〜8）",
+                min_value=1, max_value=8, step=1, key="climate_region",
+                help="住所自動取得で自動設定されます（高松=6、東京=6、仙台=3、札幌=2）")
 
         submitted = st.form_submit_button("⚡ 法規チェックを実行", use_container_width=True, type="primary")
 
@@ -364,20 +413,12 @@ def main():
         use_district=use_district,
         climate_region=int(climate_region),
         setback_exterior_wall=setback_exterior_wall,
+        corner_lot=corner_lot,
+        fireproof_building=fireproof_building,
     )
 
-    req = OwnerInput(
-        ldk_tatami=ldk_tatami,
-        num_rooms=int(num_rooms),
-        room_tatami=room_tatami,
-        master_tatami=master_tatami,
-        water_placement=water_placement,
-        parking=int(parking),
-        family=family,
-        budget=budget,
-        has_washitsu=has_washitsu,
-        has_pantry=has_pantry,
-    )
+    # 施主要望入力は廃止（法規チェック特化）。内部計算用にデフォルト値を使用
+    req = OwnerInput()
 
     with st.spinner("計算中..."):
         try:
@@ -396,6 +437,31 @@ def main():
 
     check_rows = []
     for c in result.checks:
+        # 施主要望入力の廃止に伴い、建蔽率・容積率は「最大面積の提示」に置き換える
+        if c.item == '建蔽率':
+            check_rows.append({
+                "項目": "建蔽率 → 最大建築面積",
+                "制限": c.limit,
+                "計算値": f"{site.site_area:.1f}㎡ × {result.effective_coverage_ratio:.0f}% = "
+                          f"最大 {result.max_building_area:.1f}㎡",
+                "判定": "📐 上限",
+                "備考": c.note,
+                "根拠条文": "建基法53条",
+            })
+            continue
+        if c.item == '容積率':
+            check_rows.append({
+                "項目": "容積率 → 最大延床面積",
+                "制限": f"{result.actual_far:.0f}%（指定{site.floor_area_ratio:.0f}% / "
+                        f"道路幅員{result.far_by_road:.0f}% の小さい方）",
+                "計算値": f"{site.site_area:.1f}㎡ × {result.actual_far:.0f}% = "
+                          f"最大 {result.max_floor_area:.1f}㎡",
+                "判定": "📐 上限",
+                "備考": f"道路幅員容積率 = {site.road_width}m × {result.far_coeff}/10 = "
+                        f"{result.far_by_road:.0f}%",
+                "根拠条文": "建基法52条1項・2項",
+            })
+            continue
         check_rows.append({
             "項目": c.item,
             "制限": c.limit,
@@ -419,7 +485,9 @@ def main():
         )
 
     # ── NG項目の改善提案 ──────────────────────────────────────────────
-    ng_items = [c for c in result.checks if not c.ok and c.suggestion]
+    # 建蔽率・容積率は最大面積提示に置換済みのため改善提案の対象外
+    ng_items = [c for c in result.checks
+                if not c.ok and c.suggestion and c.item not in ('建蔽率', '容積率')]
     if ng_items:
         with st.expander(f"⚠️ NG項目の改善提案（{len(ng_items)}件）", expanded=True):
             for c in ng_items:
@@ -428,18 +496,24 @@ def main():
                     st.markdown(line)
                 st.divider()
 
-    # ── 建物規模サマリー ───────────────────────────────────────────
-    st.subheader("📊 建物規模")
+    # ── 法規上限サマリー ───────────────────────────────────────────
+    st.subheader("📊 法規上限（敷地面積・建蔽率・容積率からの最大値）")
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("推奨建築面積", f"{result.recommended_building_area:.1f} ㎡")
-    col2.metric("必要延床面積", f"{result.required_floor_area:.1f} ㎡")
-    col3.metric("推奨階数", f"{result.recommended_floors} 階")
-    col4.metric("建物寸法", f"{result.building_width:.1f}m × {result.building_depth:.1f}m")
-
-    col1, col2, col3 = st.columns(3)
-    col1.metric("最大建築面積（法規）", f"{result.max_building_area:.1f} ㎡")
-    col2.metric("最大延床面積（法規）", f"{result.max_floor_area:.1f} ㎡")
-    col3.metric("実効容積率", f"{result.actual_far:.0f} %")
+    col1.metric("敷地面積", f"{site.site_area:.1f} ㎡")
+    col2.metric("最大建築面積", f"{result.max_building_area:.1f} ㎡",
+                delta=f"建蔽率 {result.effective_coverage_ratio:.0f}%（緩和込）",
+                delta_color="off")
+    col3.metric("最大延床面積", f"{result.max_floor_area:.1f} ㎡",
+                delta=f"実効容積率 {result.actual_far:.0f}%", delta_color="off")
+    col4.metric("道路幅員による容積率上限",
+                f"{result.far_by_road:.0f} %",
+                delta=f"{site.road_width}m × {result.far_coeff}/10（建基法52条2項）",
+                delta_color="off")
+    if result.far_by_road < site.floor_area_ratio:
+        st.warning(
+            f"前面道路幅員により容積率は指定 {site.floor_area_ratio:.0f}% ではなく "
+            f"**{result.actual_far:.0f}%** が適用されます（建基法52条2項）"
+        )
 
     # ── 省エネ基準 ────────────────────────────────────────────────
     if result.ua_standard:

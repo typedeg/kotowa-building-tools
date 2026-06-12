@@ -67,6 +67,57 @@ def floor_related_checks(floors: int, fire_zone: str) -> list:
     return rows
 
 
+def build_pdf_bytes(md_text: str) -> bytes:
+    """MarkdownレポートをPDFバイト列に変換する（weasyprint使用）。
+
+    カラー: kotowaブランド系統A / レイアウト原則: デジタル庁ダッシュボードガイド
+    （装飾効果なし・コントラスト4.5:1以上・出典明記）
+    フォント: Noto CJK（Streamlit Cloud は packages.txt の fonts-noto-cjk で供給）
+    """
+    import markdown as md_lib
+    from weasyprint import HTML
+
+    html_body = md_lib.markdown(md_text, extensions=['tables', 'fenced_code', 'nl2br'])
+    html_full = f'''<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<style>
+  body {{ font-family: "Noto Sans CJK JP", "Hiragino Kaku Gothic ProN", sans-serif;
+         font-size: 9.5pt; line-height: 1.8; margin: 0; color: #1E1A14; }}
+  h1   {{ font-family: "Noto Serif CJK JP", "Hiragino Mincho ProN", serif;
+          font-size: 18pt; font-weight: 600; color: #1F3427;
+          border-bottom: 3px solid #2F4A3A; padding-bottom: 8px;
+          margin: 0 0 14px 0; letter-spacing: 0.06em; }}
+  h2   {{ font-family: "Noto Serif CJK JP", "Hiragino Mincho ProN", serif;
+          font-size: 12.5pt; font-weight: 600; color: #1F3427;
+          border-left: 5px solid #2F4A3A; padding: 3px 0 3px 10px;
+          margin: 24px 0 10px 0; background: #F7F4EF; page-break-after: avoid; }}
+  table {{ border-collapse: collapse; width: 100%; font-size: 8.5pt;
+           margin: 6px 0 12px 0; }}
+  th, td {{ border: none; border-bottom: 1px solid #E3DCCB;
+            padding: 5px 8px; text-align: left; }}
+  th   {{ background: #2F4A3A; color: #FFFFFF; font-weight: 600;
+          font-size: 8pt; letter-spacing: 0.04em; }}
+  tr:nth-child(even) td {{ background: #FAF8F3; }}
+  blockquote {{ border-left: 3px solid #B08A3E; background: #FAF8F3;
+                margin: 8px 0; padding: 6px 12px; color: #3A362E; font-size: 8.5pt; }}
+  a {{ color: #2F4A3A; word-break: break-all; }}
+  @page {{
+    size: A4; margin: 18mm 16mm 20mm 16mm;
+    @bottom-left {{ content: "新築計画 法規チェック結果"; font-size: 7pt; color: #3A362E; }}
+    @bottom-right {{ content: "p. " counter(page) " / " counter(pages);
+                     font-size: 7pt; color: #3A362E; }}
+  }}
+</style>
+</head>
+<body>
+{html_body}
+</body>
+</html>'''
+    return HTML(string=html_full).write_pdf()
+
+
 def build_markdown_anon(site: SiteInput, req: OwnerInput, result, slr=None,
                         floor_rows=None, planned_floors=None) -> str:
     """法規チェック結果の Markdown を生成する（間取りなし版）"""
@@ -727,15 +778,28 @@ def main():
                                          floor_rows=floor_rows,
                                          planned_floors=int(planned_floors))
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"{timestamp}_新築法規チェック.md"
 
-        st.download_button(
-            label="📥 Markdownレポートをダウンロード",
-            data=md_content.encode("utf-8"),
-            file_name=filename,
-            mime="text/markdown",
-            use_container_width=True,
-        )
+        dl_col1, dl_col2 = st.columns(2)
+        with dl_col1:
+            st.download_button(
+                label="📥 Markdownレポート (.md)",
+                data=md_content.encode("utf-8"),
+                file_name=f"{timestamp}_新築法規チェック.md",
+                mime="text/markdown",
+                use_container_width=True,
+            )
+        with dl_col2:
+            try:
+                pdf_bytes = build_pdf_bytes(md_content)
+                st.download_button(
+                    label="📥 PDFレポート (.pdf)",
+                    data=pdf_bytes,
+                    file_name=f"{timestamp}_新築法規チェック.pdf",
+                    mime="application/pdf",
+                    use_container_width=True,
+                )
+            except Exception as pe:
+                st.caption(f"⚠️ PDF生成不可（weasyprint未導入の可能性）: {pe}")
     except Exception as e:
         st.error(f"レポート生成エラー: {e}")
 

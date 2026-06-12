@@ -28,6 +28,16 @@ TATAMI = 1.62  # 1畳 = 1.62㎡（京間）
 TSUBO = 400 / 121  # 1坪 ≒ 3.3058㎡（計量法に基づく換算値）
 
 
+def floor2(v: float) -> float:
+    """小数点第2位までの切り捨て（面積など・安全側）"""
+    return math.floor(v * 100) / 100
+
+
+def ceil2(v: float) -> float:
+    """小数点第2位までの繰上げ（建蔽率・容積率など）"""
+    return math.ceil(v * 100) / 100
+
+
 @dataclass
 class SiteInput:
     """入力：敷地・法規条件"""
@@ -153,8 +163,8 @@ def calculate(site: SiteInput, req: OwnerInput) -> SiteResult:
             polygon_building_width = polygon_data.inscribed_rect.width_m
             polygon_building_depth = polygon_data.inscribed_rect.depth_m
             warnings.append(
-                f'ポリゴン計算モード: 敷地面積（実測）{polygon_data.area_m2:.1f}㎡ / '
-                f'建築可能ゾーン {buildable_zone_area:.1f}㎡'
+                f'ポリゴン計算モード: 敷地面積（実測）{polygon_data.area_m2:.2f}㎡ / '
+                f'建築可能ゾーン {buildable_zone_area:.2f}㎡'
             )
         except ImportError:
             warnings.append('shapely 未インストール → 矩形計算で代替（pip3 install shapely で有効化）')
@@ -174,7 +184,7 @@ def calculate(site: SiteInput, req: OwnerInput) -> SiteResult:
             )
         warnings.append(
             f"前面セットバック {site.setback_front}m 適用 → "
-            f"有効面積 {effective_area:.1f}㎡（元 {site.site_area:.1f}㎡）"
+            f"有効面積 {effective_area:.2f}㎡（元 {site.site_area:.2f}㎡）"
         )
     else:
         effective_area = site.site_area
@@ -187,7 +197,7 @@ def calculate(site: SiteInput, req: OwnerInput) -> SiteResult:
         far_coeff = 4
     else:
         far_coeff = 6
-    far_by_road = site.road_width * far_coeff * 10  # → %に変換
+    far_by_road = ceil2(site.road_width * far_coeff * 10)  # → %に変換（第2位繰上げ）
 
     if site.road_width >= 12.0:
         # 幅員12m以上は52条2項の制限自体が不適用
@@ -197,7 +207,7 @@ def calculate(site: SiteInput, req: OwnerInput) -> SiteResult:
         actual_far = far_by_road
         warnings.append(
             f"前面道路幅員 {site.road_width}m × {far_coeff}/10 により容積率は "
-            f"{actual_far:.0f}% に制限（指定 {site.floor_area_ratio:.0f}%・建基法52条2項）"
+            f"{actual_far:.2f}% に制限（指定 {site.floor_area_ratio:.2f}%・建基法52条2項）"
         )
     else:
         actual_far = site.floor_area_ratio
@@ -214,7 +224,7 @@ def calculate(site: SiteInput, req: OwnerInput) -> SiteResult:
         _fp_label = ('防火地域内の耐火建築物等' if site.fire_zone == '防火'
                      else '準防火地域内の耐火・準耐火建築物等')
         warnings.append(f'{_fp_label} +10% を適用（建基法53条3項1号）')
-    effective_bcr = min(site.coverage_ratio + bcr_bonus, 100.0)
+    effective_bcr = ceil2(min(site.coverage_ratio + bcr_bonus, 100.0))
     if (site.coverage_ratio >= 80 and site.fire_zone == '防火'
             and site.fireproof_building):
         effective_bcr = 100.0
@@ -223,9 +233,9 @@ def calculate(site: SiteInput, req: OwnerInput) -> SiteResult:
             '（建基法53条6項1号）'
         )
 
-    # ── 3. 法規上限面積 ─────────────────────────────────────────────
-    max_building_area = effective_area * effective_bcr / 100
-    max_floor_area = effective_area * actual_far / 100
+    # ── 3. 法規上限面積（面積は第2位切り捨て＝安全側） ──────────────
+    max_building_area = floor2(effective_area * effective_bcr / 100)
+    max_floor_area = floor2(effective_area * actual_far / 100)
 
     # ── 4. 必要延床面積の推計 ───────────────────────────────────────
     ldk_m2 = req.ldk_tatami * TATAMI
@@ -286,13 +296,13 @@ def calculate(site: SiteInput, req: OwnerInput) -> SiteResult:
         )
 
     # ── 7. 法規チェック ─────────────────────────────────────────────
-    bcr_actual = rec_building_area / effective_area * 100
+    bcr_actual = ceil2(floor2(rec_building_area) / floor2(effective_area) * 100)
     _bcr_ok = rec_building_area <= max_building_area
     _bcr_shortage = rec_building_area - max_building_area if not _bcr_ok else 0.0
     _bcr_suggestion = ''
     if not _bcr_ok:
         _bcr_lines = [
-            f"建築面積を約 {_bcr_shortage:.1f}㎡ 削減するか、以下のいずれかを検討してください。",
+            f"建築面積を約 {_bcr_shortage:.2f}㎡ 削減するか、以下のいずれかを検討してください。",
             "① 建物フットプリントを縮小し、不足分を上階（2階建て以上）に振り分ける",
         ]
         if site.fire_zone == '防火':
@@ -303,36 +313,36 @@ def calculate(site: SiteInput, req: OwnerInput) -> SiteResult:
         _bcr_suggestion = '\n'.join(_bcr_lines)
     checks.append(CheckItem(
         item='建蔽率',
-        limit=(f"{effective_bcr:.0f}%（指定{site.coverage_ratio:.0f}%＋緩和）"
-               if effective_bcr != site.coverage_ratio else f"{site.coverage_ratio:.0f}%"),
-        calc=f"{rec_building_area:.1f}㎡ ÷ {effective_area:.1f}㎡ = {bcr_actual:.1f}%",
+        limit=(f"{effective_bcr:.2f}%（指定{site.coverage_ratio:.2f}%＋緩和）"
+               if effective_bcr != site.coverage_ratio else f"{site.coverage_ratio:.2f}%"),
+        calc=f"{floor2(rec_building_area):.2f}㎡ ÷ {floor2(effective_area):.2f}㎡ = {bcr_actual:.2f}%",
         ok=_bcr_ok,
         note='防火地域の耐火建築物は+10%緩和あり' if site.fire_zone == '防火' else '',
         law_ref='建基法53条',
         suggestion=_bcr_suggestion,
     ))
 
-    far_actual = required_floor_area / effective_area * 100
+    far_actual = ceil2(floor2(required_floor_area) / floor2(effective_area) * 100)
     _far_ref = '建基法52条2項' if far_by_road < site.floor_area_ratio else '建基法52条'
     _far_ok = required_floor_area <= max_floor_area
     _far_shortage = required_floor_area - max_floor_area if not _far_ok else 0.0
     _far_suggestion = ''
     if not _far_ok:
         _far_lines = [
-            f"延床面積を約 {_far_shortage:.1f}㎡ 削減するか、以下のいずれかを検討してください。",
+            f"延床面積を約 {_far_shortage:.2f}㎡ 削減するか、以下のいずれかを検討してください。",
             "① 車庫面積を延床面積の 1/5 以内に収めて容積率不算入枠を最大活用する（建基法52条3項）",
             "② LDK・居室の畳数要件を見直し、必要延床面積を圧縮する",
         ]
         if far_by_road < site.floor_area_ratio:
             _far_lines.append(
-                f"③ 前面道路による制限が効いています（道路幅員 {site.road_width}m × 4/10 = {far_by_road:.0f}%）。"
+                f"③ 前面道路による制限が効いています（道路幅員 {site.road_width}m × 4/10 = {far_by_road:.2f}%）。"
                 "道路中心からのセットバックで実効幅員を増やせる場合があります（建基法52条2項）"
             )
         _far_suggestion = '\n'.join(_far_lines)
     checks.append(CheckItem(
         item='容積率',
-        limit=f"{actual_far:.0f}%",
-        calc=f"{required_floor_area:.1f}㎡ ÷ {effective_area:.1f}㎡ = {far_actual:.1f}%",
+        limit=f"{actual_far:.2f}%",
+        calc=f"{floor2(required_floor_area):.2f}㎡ ÷ {floor2(effective_area):.2f}㎡ = {far_actual:.2f}%",
         ok=_far_ok,
         note='車庫は延床の1/5まで容積率不算入',
         law_ref=_far_ref,
@@ -369,7 +379,7 @@ def calculate(site: SiteInput, req: OwnerInput) -> SiteResult:
         checks.append(CheckItem(
             item=f'採光：{_room_name}',
             limit=f'床面積×1/7 = {_req_area:.2f}㎡以上',
-            calc=f'居室面積 {_room_m2:.1f}㎡（採光補正係数は設計時に算定）',
+            calc=f'居室面積 {_room_m2:.2f}㎡（採光補正係数は設計時に算定）',
             ok=True,
             note='採光補正係数（令19条）は窓位置・隣地距離により変動。設計時に確認要',
             law_ref='建基法28条・令19条',
@@ -383,17 +393,17 @@ def calculate(site: SiteInput, req: OwnerInput) -> SiteResult:
         _ew_suggestion = ''
         if not ew_ok:
             _ew_suggestion = (
-                f"外壁を敷地境界から {site.setback_exterior_wall:.1f}m 後退させる必要があります（現在 {site.setback_front:.1f}m）。\n"
-                f"① 建物を敷地奥側に {_ew_shortage:.1f}m 後退配置することで適合します。\n"
+                f"外壁を敷地境界から {site.setback_exterior_wall:.2f}m 後退させる必要があります（現在 {site.setback_front:.2f}m）。\n"
+                f"① 建物を敷地奥側に {_ew_shortage:.2f}m 後退配置することで適合します。\n"
                 "② 軒・庇・出窓（出幅 50cm 未満）は外壁後退距離の適用外となる場合があります（令135条の20）。"
                 "細部は特定行政庁の解釈を確認してください。"
             )
         checks.append(CheckItem(
             item='外壁後退距離（建基法54条）',
-            limit=f'{site.setback_exterior_wall:.1f}m以上',
-            calc=f'前面セットバック {site.setback_front:.1f}m',
+            limit=f'{site.setback_exterior_wall:.2f}m以上',
+            calc=f'前面セットバック {site.setback_front:.2f}m',
             ok=ew_ok,
-            note='' if ew_ok else f'外壁後退が {site.setback_exterior_wall:.1f}m 未満のため要確認',
+            note='' if ew_ok else f'外壁後退が {site.setback_exterior_wall:.2f}m 未満のため要確認',
             law_ref='建基法54条',
             suggestion=_ew_suggestion,
         ))
@@ -450,23 +460,23 @@ def calculate(site: SiteInput, req: OwnerInput) -> SiteResult:
         _energy_fields = {}
 
     return SiteResult(
-        max_building_area=round(max_building_area, 2),
-        max_floor_area=round(max_floor_area, 2),
-        actual_far=actual_far,
+        max_building_area=max_building_area,
+        max_floor_area=max_floor_area,
+        actual_far=ceil2(actual_far),
         effective_coverage_ratio=effective_bcr,
-        far_by_road=round(far_by_road, 1),
+        far_by_road=far_by_road,
         far_coeff=far_coeff,
-        effective_site_area=round(effective_area, 2),
-        recommended_building_area=round(rec_building_area, 2),
+        effective_site_area=floor2(effective_area),
+        recommended_building_area=floor2(rec_building_area),
         recommended_floors=floors,
         building_width=round(building_width, 2),
         building_depth=round(building_depth, 2),
-        required_floor_area=round(required_floor_area, 2),
+        required_floor_area=floor2(required_floor_area),
         room_areas=room_areas,
         checks=checks,
         warnings=warnings,
         polygon_data=polygon_data,
-        buildable_zone_area=round(buildable_zone_area, 2),
+        buildable_zone_area=floor2(buildable_zone_area),
         building_offset_x=round(building_offset_x, 3),
         building_offset_y=round(building_offset_y, 3),
         calculation_mode=calculation_mode,

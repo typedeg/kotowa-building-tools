@@ -15,7 +15,60 @@ from calculator import SiteInput, OwnerInput, calculate
 # from report import generate_markdown   # 間取りレポート：現在無効
 
 
-def build_markdown_anon(site: SiteInput, req: OwnerInput, result, slr=None) -> str:
+def floor_related_checks(floors: int, fire_zone: str) -> list:
+    """建物計画階数に応じて確認すべき関係法令（項目, 内容, 根拠条文）を返す。
+
+    条文の存在は e-Gov 建築基準法・施行令の原文で照合済み（2026-06-12）。
+    適合判定は行わず「要確認」項目として提示する。
+    """
+    rows = []
+    if floors == 1:
+        rows.append((
+            "確認申請の区分（平屋）",
+            "平屋かつ延べ面積200㎡以下は法6条1項3号建築物（審査特例の対象）。"
+            "延べ面積200㎡超は2号建築物として構造関係規定等が審査対象",
+            "建基法6条1項",
+        ))
+    if floors >= 2:
+        rows.append((
+            "確認申請の区分（階数2以上）",
+            "階数2以上の建築物は法6条1項2号建築物＝構造関係規定等の図書が審査対象"
+            "（令和7年4月改正で旧4号特例が縮小）",
+            "建基法6条1項2号",
+        ))
+        rows.append((
+            "階段の寸法",
+            "階段・踊場の幅、蹴上げ・踏面の寸法基準への適合を確認",
+            "建基令23条",
+        ))
+    if floors >= 3:
+        rows.append((
+            "構造計算",
+            "階数3以上は構造計算が必要（木造3階建ては許容応力度計算等）。"
+            "構造計算書を確認申請に添付",
+            "建基法20条",
+        ))
+        rows.append((
+            "避難規定",
+            "居室から直通階段までの歩行距離等の避難規定を確認",
+            "建基令120条",
+        ))
+        if fire_zone in ("準防火", "防火"):
+            rows.append((
+                "防火制限（3階建て）",
+                f"{fire_zone}地域内の3階建ては耐火・準耐火建築物等の構造制限を確認",
+                "建基法61条",
+            ))
+        rows.append((
+            "中間検査",
+            "特定行政庁の指定により中間検査の対象となる場合あり（高松市の指定状況を確認）",
+            "建基法7条の3",
+        ))
+    return rows
+
+
+def build_markdown_anon(site: SiteInput, req: OwnerInput, result, slr=None,
+                        floor_rows=None, planned_floors=None) -> str:
     """法規チェック結果の Markdown を生成する（間取りなし版）"""
     from datetime import date
     lines = []
@@ -41,6 +94,17 @@ def build_markdown_anon(site: SiteInput, req: OwnerInput, result, slr=None) -> s
         lines.append(f"| {c.item} | {c.limit} | {c.calc} | {verdict} | {c.note} | {c.law_ref} |")
     lines.append("")
 
+    if floor_rows:
+        lines.append(f"## 🏠 計画階数（{planned_floors}階建て）に応じた関係法令（要確認）")
+        lines.append("")
+        lines.append("| 項目 | 内容 | 根拠条文 |")
+        lines.append("|------|------|----------|")
+        for _item, _content, _ref in floor_rows:
+            lines.append(f"| {_item} | {_content} | {_ref} |")
+        lines.append("")
+        lines.append("> 適合判定は行っていません。一次ソース（e-Gov法令検索）と自治体窓口で必ず確認してください。")
+        lines.append("")
+
     ng_items = [c for c in result.checks if not c.ok and c.suggestion]
     if ng_items:
         lines.append("## ⚠️ NG項目の改善提案")
@@ -54,12 +118,12 @@ def build_markdown_anon(site: SiteInput, req: OwnerInput, result, slr=None) -> s
 
     lines.append("## 📊 法規上限（敷地面積・建蔽率・容積率からの最大値）")
     lines.append("")
-    lines.append(f"- 敷地面積：{site.site_area:.1f} ㎡")
-    lines.append(f"- 最大建築面積：{result.max_building_area:.1f} ㎡"
-                 f"（建蔽率 {result.effective_coverage_ratio:.0f}%・緩和込・建基法53条）")
-    lines.append(f"- 最大延床面積：{result.max_floor_area:.1f} ㎡"
-                 f"（実効容積率 {result.actual_far:.0f}%・建基法52条）")
-    lines.append(f"- 道路幅員による容積率上限：{result.far_by_road:.0f} %"
+    lines.append(f"- 敷地面積：{site.site_area:.2f} ㎡")
+    lines.append(f"- 最大建築面積：{result.max_building_area:.2f} ㎡"
+                 f"（建蔽率 {result.effective_coverage_ratio:.2f}%・緩和込・建基法53条）")
+    lines.append(f"- 最大延床面積：{result.max_floor_area:.2f} ㎡"
+                 f"（実効容積率 {result.actual_far:.2f}%・建基法52条）")
+    lines.append(f"- 道路幅員による容積率上限：{result.far_by_road:.2f} %"
                  f"（{site.road_width}m × {result.far_coeff}/10・建基法52条2項）")
     lines.append("")
 
@@ -144,17 +208,17 @@ def render_setback_charts(site: SiteInput, result) -> None:
     rect1 = patches.Rectangle(
         (bx, 0), result.building_depth, est_bldg_h,
         linewidth=1.5, edgecolor='#2980b9', facecolor='#aed6f1', alpha=0.6,
-        label=f'Building {result.recommended_floors}F (~{est_bldg_h:.0f}m)'
+        label=f'Building {result.recommended_floors}F (~{est_bldg_h:.2f}m)'
     )
     ax1.add_patch(rect1)
 
     if slr.abs_height_limit > 0:
         ax1.axhline(y=slr.abs_height_limit, color='#e67e22', linestyle='-.', linewidth=1.5,
-                    label=f'Max H {slr.abs_height_limit:.0f}m')
+                    label=f'Max H {slr.abs_height_limit:.2f}m')
 
     D_front = bx
     ax1.annotate(
-        f'Front {slr.effective_max_height_front:.1f}m',
+        f'Front {slr.effective_max_height_front:.2f}m',
         xy=(D_front, slr.effective_max_height_front),
         xytext=(D_front + 1.5, slr.effective_max_height_front + 0.8),
         fontsize=8, color='#c0392b',
@@ -163,7 +227,7 @@ def render_setback_charts(site: SiteInput, result) -> None:
     D_rear = bx + result.building_depth
     if slr.effective_max_height_rear < 9999:
         ax1.annotate(
-            f'Rear {slr.effective_max_height_rear:.1f}m',
+            f'Rear {slr.effective_max_height_rear:.2f}m',
             xy=(D_rear, slr.effective_max_height_rear),
             xytext=(D_rear + 1.0, slr.effective_max_height_rear + 0.8),
             fontsize=8, color='#c0392b',
@@ -188,7 +252,7 @@ def render_setback_charts(site: SiteInput, result) -> None:
         xs2 = [p.dist_m for p in slr.north_points]
         ys2 = [p.height_m for p in slr.north_points]
         ax2.plot(xs2, ys2, color='#27ae60', linewidth=2.0,
-                 label=f'North setback base={slr.north_base_h:.0f}m slope=1:1.25')
+                 label=f'North setback base={slr.north_base_h:.2f}m slope=1:1.25')
 
         ax2.axvline(x=0, color='black', linestyle='--', linewidth=1.2)
         ax2.text(0.15, 0.3, 'N.Boundary', fontsize=8, color='black')
@@ -197,13 +261,13 @@ def render_setback_charts(site: SiteInput, result) -> None:
         rect2 = patches.Rectangle(
             (x_rear_from_north, 0), result.building_depth, est_bldg_h,
             linewidth=1.5, edgecolor='#2980b9', facecolor='#aed6f1', alpha=0.6,
-            label=f'Building {result.recommended_floors}F (~{est_bldg_h:.0f}m)'
+            label=f'Building {result.recommended_floors}F (~{est_bldg_h:.2f}m)'
         )
         ax2.add_patch(rect2)
 
         if slr.abs_height_limit > 0:
             ax2.axhline(y=slr.abs_height_limit, color='#e67e22', linestyle='-.', linewidth=1.5,
-                        label=f'Max H {slr.abs_height_limit:.0f}m')
+                        label=f'Max H {slr.abs_height_limit:.2f}m')
 
         ax2.set_xlabel('Horizontal dist. from north boundary x (m) [southward]')
         ax2.set_ylabel('Height H (m)')
@@ -235,17 +299,10 @@ def main():
     st.title("📐 新築計画 法規チェックツール")
     st.caption("敷地条件・施主要望から建築基準法の適合性を自動チェックします")
 
-    # フォーム初期値（住所自動取得・用途地域選択で上書きされる）
-    _defaults = {
-        "coverage_ratio": 60.0,
-        "floor_area_ratio": 150.0,
-        "use_district": "第一種低層住居専用地域",
-        "fire_zone": "なし",
-        "height_limit": 10.0,   # デフォルト用途地域＝一低のため建基法55条の10m
-        "climate_region": 6,
-    }
-    for _k, _v in _defaults.items():
-        st.session_state.setdefault(_k, _v)
+    # フォーム初期値：未確定項目はブランク（None）。住所自動取得・選択で確定次第表示される
+    for _k in ("coverage_ratio", "floor_area_ratio", "use_district",
+               "fire_zone", "height_limit", "climate_region"):
+        st.session_state.setdefault(_k, None)
 
     _DISTRICTS = [
         "第一種低層住居専用地域", "第二種低層住居専用地域",
@@ -264,7 +321,9 @@ def main():
         return 10.0 if district in _LOW_RISE else 0.0
 
     def _on_district_change():
-        st.session_state["height_limit"] = _default_height(st.session_state["use_district"])
+        _d = st.session_state.get("use_district")
+        if _d:
+            st.session_state["height_limit"] = _default_height(_d)
 
     # ── 住所から法規条件を自動取得（任意） ─────────────────────────
     with st.expander("📍 住所から用途地域・建蔽率・容積率・防火指定を自動取得（任意）"):
@@ -337,8 +396,11 @@ def main():
     # ── 用途地域（選択即時に法定高さ・通知を反映するためフォーム外） ──
     st.subheader("🗺 用途地域")
     use_district = st.selectbox(
-        "用途地域", _DISTRICTS, key="use_district", on_change=_on_district_change)
-    if use_district in _LOW_RISE:
+        "用途地域", _DISTRICTS, key="use_district", on_change=_on_district_change,
+        index=None, placeholder="住所から自動取得、または選択してください")
+    if use_district is None:
+        st.caption("用途地域が確定すると、法定の高さ制限が自動表示されます")
+    elif use_district in _LOW_RISE:
         st.info(
             "建基法55条1項：この用途地域の建築物の高さは **10m又は12m**"
             "（どちらかは都市計画で指定）以下です。基本値 **10m** を高さ制限欄に設定しました。"
@@ -355,28 +417,46 @@ def main():
 
     with st.form("madori_form"):
         st.subheader("📐 敷地条件")
+        st.caption("各欄は住所自動取得または入力で確定するまでブランクです（★は必須）")
         col1, col2, col3 = st.columns(3)
         with col1:
-            site_area = st.number_input("敷地面積 (㎡) ★", min_value=10.0, value=112.0, step=1.0)
-            coverage_ratio = st.number_input("建蔽率 (%) ★", min_value=10.0, max_value=100.0, step=10.0, key="coverage_ratio")
-            floor_area_ratio = st.number_input("容積率 (%) ★", min_value=10.0, max_value=1000.0, step=50.0, key="floor_area_ratio")
+            site_area = st.number_input(
+                "敷地面積 (㎡) ★", min_value=10.0, max_value=10000.0, value=None,
+                step=1.0, placeholder="例: 112.0")
+            coverage_ratio = st.number_input(
+                "建蔽率 (%) ★", min_value=10.0, max_value=100.0, step=10.0,
+                key="coverage_ratio", placeholder="住所から自動取得 / 入力")
+            floor_area_ratio = st.number_input(
+                "容積率 (%) ★", min_value=10.0, max_value=1000.0, step=50.0,
+                key="floor_area_ratio", placeholder="住所から自動取得 / 入力")
         with col2:
-            road_direction = st.selectbox("接道方位 ★", ["南", "北", "東", "西"])
-            road_width = st.number_input("前面道路幅員 (m)", min_value=1.0, max_value=20.0, value=4.5, step=0.5)
+            road_direction = st.selectbox(
+                "接道方位 ★", ["南", "北", "東", "西"],
+                index=None, placeholder="選択してください")
+            road_width = st.number_input(
+                "前面道路幅員 (m) ★", min_value=1.0, max_value=20.0, value=None,
+                step=0.5, placeholder="例: 4.5")
             st.caption(f"🔗 [たかまっぷ（道路種別等）]({_TAKAMAP_ROAD})｜建基法上の道路種別は地図と建築指導課で要確認")
-            setback_front = st.number_input("前面セットバック (m)", min_value=0.0, max_value=5.0, value=0.0, step=0.5)
+            setback_front = st.number_input(
+                "前面セットバック (m)", min_value=0.0, max_value=5.0, value=None,
+                step=0.5, placeholder="なしは空欄のまま")
         with col3:
+            planned_floors = st.selectbox(
+                "建物計画階数 ★", [1, 2, 3], index=None,
+                placeholder="選択してください", format_func=lambda v: f"{v}階建て",
+                help="選択した階数に応じて確認すべき関係法令を法規チェック結果に表示します")
             fire_zone = st.selectbox(
-                "防火地域区分", ["なし", "法22条地域", "準防火", "防火"], key="fire_zone")
+                "防火地域区分", ["なし", "法22条地域", "準防火", "防火"], key="fire_zone",
+                index=None, placeholder="住所から自動取得 / 選択")
             height_limit = st.number_input(
                 "高さ制限 (m)（0=なし）", min_value=0.0, max_value=30.0, step=0.5,
-                key="height_limit",
+                key="height_limit", placeholder="用途地域の確定で自動設定",
                 help="用途地域の選択で法定の基本値が自動設定されます（建基法55条）。"
                      "都市計画で12m指定の場合や高度地区がある場合は修正してください。")
             setback_exterior_wall = st.number_input(
                 "外壁後退距離制限 (m)（0=なし）【建基法54条・低層住専のみ】",
-                min_value=0.0, max_value=3.0, value=0.0, step=0.5
-            )
+                min_value=0.0, max_value=3.0, value=None, step=0.5,
+                placeholder="なしは空欄のまま")
 
         st.markdown("**建蔽率の緩和（建基法53条3項）** — 該当する場合にチェック")
         col1, col2, col3 = st.columns(3)
@@ -391,14 +471,43 @@ def main():
                      "建蔽率80%地域×防火地域×耐火は適用除外＝100%（53条6項1号）")
         with col3:
             climate_region = st.number_input(
-                "省エネ地域区分（1〜8）",
-                min_value=1, max_value=8, step=1, key="climate_region",
+                "省エネ地域区分（1〜8）", min_value=1, max_value=8, step=1,
+                key="climate_region", placeholder="住所から自動取得 / 入力",
                 help="住所自動取得で自動設定されます（高松=6、東京=6、仙台=3、札幌=2）")
 
         submitted = st.form_submit_button("⚡ 法規チェックを実行", use_container_width=True, type="primary")
 
     if not submitted:
         return
+
+    # ── 必須項目の確定チェック ─────────────────────────────────────
+    _missing = []
+    if site_area is None:
+        _missing.append("敷地面積")
+    if coverage_ratio is None:
+        _missing.append("建蔽率")
+    if floor_area_ratio is None:
+        _missing.append("容積率")
+    if use_district is None:
+        _missing.append("用途地域")
+    if road_direction is None:
+        _missing.append("接道方位")
+    if road_width is None:
+        _missing.append("前面道路幅員")
+    if planned_floors is None:
+        _missing.append("建物計画階数")
+    if _missing:
+        st.error("未確定の必須項目があります: " + "・".join(_missing))
+        return
+    if fire_zone is None:
+        fire_zone = "なし"
+        st.warning("防火地域区分が未確定のため「なし」として計算します（自治体で要確認）")
+    if climate_region is None:
+        climate_region = 6
+        st.warning("省エネ地域区分が未確定のため 6地域 として計算します（要確認）")
+    setback_front = setback_front or 0.0
+    setback_exterior_wall = setback_exterior_wall or 0.0
+    height_limit = height_limit if height_limit is not None else _default_height(use_district)
 
     site = SiteInput(
         site_area=site_area,
@@ -427,6 +536,10 @@ def main():
             st.error(f"計算エラー: {e}")
             return
 
+    # 計画階数を採用（断面図の建物高さ・表示に反映）し、階数別の関係法令を用意
+    result.recommended_floors = int(planned_floors)
+    floor_rows = floor_related_checks(int(planned_floors), fire_zone)
+
     # ── 法規チェック結果 ──────────────────────────────────────────
     st.divider()
     st.subheader("📋 法規チェック結果")
@@ -442,8 +555,8 @@ def main():
             check_rows.append({
                 "項目": "建蔽率 → 最大建築面積",
                 "制限": c.limit,
-                "計算値": f"{site.site_area:.1f}㎡ × {result.effective_coverage_ratio:.0f}% = "
-                          f"最大 {result.max_building_area:.1f}㎡",
+                "計算値": f"{site.site_area:.2f}㎡ × {result.effective_coverage_ratio:.2f}% = "
+                          f"最大 {result.max_building_area:.2f}㎡",
                 "判定": "📐 上限",
                 "備考": c.note,
                 "根拠条文": "建基法53条",
@@ -452,13 +565,13 @@ def main():
         if c.item == '容積率':
             check_rows.append({
                 "項目": "容積率 → 最大延床面積",
-                "制限": f"{result.actual_far:.0f}%（指定{site.floor_area_ratio:.0f}% / "
-                        f"道路幅員{result.far_by_road:.0f}% の小さい方）",
-                "計算値": f"{site.site_area:.1f}㎡ × {result.actual_far:.0f}% = "
-                          f"最大 {result.max_floor_area:.1f}㎡",
+                "制限": f"{result.actual_far:.2f}%（指定{site.floor_area_ratio:.2f}% / "
+                        f"道路幅員{result.far_by_road:.2f}% の小さい方）",
+                "計算値": f"{site.site_area:.2f}㎡ × {result.actual_far:.2f}% = "
+                          f"最大 {result.max_floor_area:.2f}㎡",
                 "判定": "📐 上限",
                 "備考": f"道路幅員容積率 = {site.road_width}m × {result.far_coeff}/10 = "
-                        f"{result.far_by_road:.0f}%",
+                        f"{result.far_by_road:.2f}%",
                 "根拠条文": "建基法52条1項・2項",
             })
             continue
@@ -469,6 +582,17 @@ def main():
             "判定": "✅ OK" if c.ok else "❌ NG",
             "備考": c.note,
             "根拠条文": c.law_ref,
+        })
+
+    # 階数別の関係法令（計画階数の選択に応じて表示・適合判定はせず要確認として提示）
+    for _item, _content, _ref in floor_rows:
+        check_rows.append({
+            "項目": f"【{planned_floors}階建て】{_item}",
+            "制限": "—",
+            "計算値": _content,
+            "判定": "📌 要確認",
+            "備考": "一次ソース・自治体窓口で確認",
+            "根拠条文": _ref,
         })
 
     if check_rows:
@@ -499,20 +623,20 @@ def main():
     # ── 法規上限サマリー ───────────────────────────────────────────
     st.subheader("📊 法規上限（敷地面積・建蔽率・容積率からの最大値）")
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("敷地面積", f"{site.site_area:.1f} ㎡")
-    col2.metric("最大建築面積", f"{result.max_building_area:.1f} ㎡",
-                delta=f"建蔽率 {result.effective_coverage_ratio:.0f}%（緩和込）",
+    col1.metric("敷地面積", f"{site.site_area:.2f} ㎡")
+    col2.metric("最大建築面積", f"{result.max_building_area:.2f} ㎡",
+                delta=f"建蔽率 {result.effective_coverage_ratio:.2f}%（緩和込）",
                 delta_color="off")
-    col3.metric("最大延床面積", f"{result.max_floor_area:.1f} ㎡",
-                delta=f"実効容積率 {result.actual_far:.0f}%", delta_color="off")
+    col3.metric("最大延床面積", f"{result.max_floor_area:.2f} ㎡",
+                delta=f"実効容積率 {result.actual_far:.2f}%", delta_color="off")
     col4.metric("道路幅員による容積率上限",
-                f"{result.far_by_road:.0f} %",
+                f"{result.far_by_road:.2f} %",
                 delta=f"{site.road_width}m × {result.far_coeff}/10（建基法52条2項）",
                 delta_color="off")
     if result.far_by_road < site.floor_area_ratio:
         st.warning(
-            f"前面道路幅員により容積率は指定 {site.floor_area_ratio:.0f}% ではなく "
-            f"**{result.actual_far:.0f}%** が適用されます（建基法52条2項）"
+            f"前面道路幅員により容積率は指定 {site.floor_area_ratio:.2f}% ではなく "
+            f"**{result.actual_far:.2f}%** が適用されます（建基法52条2項）"
         )
 
     # ── 省エネ基準 ────────────────────────────────────────────────
@@ -576,7 +700,7 @@ def main():
     #                         room_rows.append({
     #                             "フロア": f"{floor_num}F",
     #                             "部屋名": room.name,
-    #                             "面積": f"{room.area_m2:.1f} ㎡",
+    #                             "面積": f"{room.area_m2:.2f} ㎡",
     #                         })
     #             if room_rows:
     #                 import pandas as pd
@@ -599,7 +723,9 @@ def main():
         except Exception:
             pass
 
-        md_content = build_markdown_anon(site, req, result, slr=slr)
+        md_content = build_markdown_anon(site, req, result, slr=slr,
+                                         floor_rows=floor_rows,
+                                         planned_floors=int(planned_floors))
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"{timestamp}_新築法規チェック.md"
 
